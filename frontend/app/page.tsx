@@ -11,15 +11,10 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  PieChart,
-  Pie,
   Cell,
-  Legend,
 } from "recharts";
 
-// ──────────────────────────────────────────────────────────────────
-// Types
-// ──────────────────────────────────────────────────────────────────
+// ── Types ───────────────────────────────────────────────────────
 
 interface LogEntry {
   id: number;
@@ -44,83 +39,10 @@ interface Summary {
 }
 
 const API_BASE = "http://localhost:8000";
-const CHART_COLORS = [
-  "#3b82f6",
-  "#8b5cf6",
-  "#10b981",
-  "#f59e0b",
-  "#f43f5e",
-  "#06b6d4",
-  "#ec4899",
-];
 
-// ──────────────────────────────────────────────────────────────────
-// Helper Components
-// ──────────────────────────────────────────────────────────────────
+// ── Tooltip ─────────────────────────────────────────────────────
 
-function StatCard({
-  label,
-  value,
-  subtitle,
-  accentColor,
-  icon,
-}: {
-  label: string;
-  value: string;
-  subtitle?: string;
-  accentColor: string;
-  icon: string;
-}) {
-  return (
-    <div className="relative overflow-hidden rounded-2xl bg-card-bg border border-card-border p-6 transition-all duration-300 hover:border-opacity-60 hover:scale-[1.02] group">
-      {/* Gradient glow */}
-      <div
-        className="absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity duration-500 rounded-2xl"
-        style={{
-          background: `radial-gradient(circle at top right, ${accentColor}, transparent 70%)`,
-        }}
-      />
-      <div className="relative z-10">
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-muted text-sm font-medium tracking-wide uppercase">
-            {label}
-          </span>
-          <span className="text-2xl">{icon}</span>
-        </div>
-        <p className="text-3xl font-bold tracking-tight text-foreground">
-          {value}
-        </p>
-        {subtitle && (
-          <p className="text-muted text-sm mt-1">{subtitle}</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="flex flex-col items-center justify-center py-24 text-center">
-      <div className="text-6xl mb-6">📡</div>
-      <h2 className="text-2xl font-bold text-foreground mb-3">
-        No Telemetry Data Yet
-      </h2>
-      <p className="text-muted max-w-md leading-relaxed">
-        Start sending requests through the proxy at{" "}
-        <code className="bg-card-bg border border-card-border px-2 py-0.5 rounded text-accent-blue text-sm">
-          http://localhost:8000/v1/chat/completions
-        </code>{" "}
-        and your usage data will appear here automatically.
-      </p>
-    </div>
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────
-// Custom Recharts Tooltip
-// ──────────────────────────────────────────────────────────────────
-
-function CustomTooltip({
+function ChartTooltip({
   active,
   payload,
   label,
@@ -129,12 +51,12 @@ function CustomTooltip({
   payload?: { name: string; value: number; color: string }[];
   label?: string;
 }) {
-  if (!active || !payload || payload.length === 0) return null;
+  if (!active || !payload?.length) return null;
   return (
-    <div className="bg-card-bg border border-card-border rounded-xl px-4 py-3 shadow-xl">
-      <p className="text-xs text-muted mb-1">{label}</p>
+    <div className="bg-bg-secondary border border-border rounded-lg px-3 py-2 text-xs shadow-lg">
+      <p className="text-text-muted mb-1">{label}</p>
       {payload.map((entry, i) => (
-        <p key={i} className="text-sm font-semibold" style={{ color: entry.color }}>
+        <p key={i} style={{ color: entry.color }} className="font-medium">
           {entry.name}: {typeof entry.value === "number" ? entry.value.toLocaleString() : entry.value}
         </p>
       ))}
@@ -142,9 +64,7 @@ function CustomTooltip({
   );
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Dashboard Page
-// ──────────────────────────────────────────────────────────────────
+// ── Page ────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -154,25 +74,16 @@ export default function DashboardPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [summaryRes, logsRes] = await Promise.all([
+      const [sRes, lRes] = await Promise.all([
         fetch(`${API_BASE}/v1/logs/summary`),
         fetch(`${API_BASE}/v1/logs?limit=200`),
       ]);
-
-      if (!summaryRes.ok || !logsRes.ok) {
-        throw new Error("Failed to fetch data from the backend.");
-      }
-
-      const summaryData: Summary = await summaryRes.json();
-      const logsData: LogEntry[] = await logsRes.json();
-
-      setSummary(summaryData);
-      setLogs(logsData);
+      if (!sRes.ok || !lRes.ok) throw new Error("Backend returned an error.");
+      setSummary(await sRes.json());
+      setLogs(await lRes.json());
       setError(null);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Could not connect to backend."
-      );
+      setError(err instanceof Error ? err.message : "Connection failed.");
     } finally {
       setLoading(false);
     }
@@ -180,13 +91,12 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000); // Auto-refresh every 5s
-    return () => clearInterval(interval);
+    const id = setInterval(fetchData, 5000);
+    return () => clearInterval(id);
   }, [fetchData]);
 
-  // ── Derived chart data ──────────────────────────────────────────
+  // ── Derived data ──────────────────────────────────────────────
 
-  // Cost over time (group by day)
   const costOverTime = logs
     .slice()
     .reverse()
@@ -205,70 +115,43 @@ export default function DashboardPage() {
       return acc;
     }, []);
 
-  // Model distribution (pie chart)
-  const modelDistribution = logs.reduce<{ name: string; value: number }[]>(
-    (acc, log) => {
-      const existing = acc.find((d) => d.name === log.model_name);
-      if (existing) {
-        existing.value += 1;
-      } else {
-        acc.push({ name: log.model_name, value: 1 });
-      }
-      return acc;
-    },
-    []
-  );
-
-  // Latency per model (bar chart)
   const latencyPerModel = logs.reduce<
-    { model: string; avg_latency: number; count: number }[]
+    { model: string; latency: number; count: number }[]
   >((acc, log) => {
     const existing = acc.find((d) => d.model === log.model_name);
     if (existing) {
-      existing.avg_latency =
-        (existing.avg_latency * existing.count + log.latency_ms) /
-        (existing.count + 1);
+      existing.latency =
+        (existing.latency * existing.count + log.latency_ms) / (existing.count + 1);
       existing.count += 1;
     } else {
-      acc.push({ model: log.model_name, avg_latency: log.latency_ms, count: 1 });
+      acc.push({ model: log.model_name, latency: log.latency_ms, count: 1 });
     }
     return acc;
   }, []);
 
-  // ── Render ──────────────────────────────────────────────────────
+  // ── Loading state ─────────────────────────────────────────────
 
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 border-3 border-accent-blue border-t-transparent rounded-full animate-spin" />
-          <p className="text-muted text-sm">Loading telemetry data...</p>
-        </div>
+        <p className="text-text-muted text-sm">Loading…</p>
       </div>
     );
   }
 
+  // ── Error state ───────────────────────────────────────────────
+
   if (error) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="bg-card-bg border border-accent-rose/30 rounded-2xl p-8 max-w-md text-center">
-          <p className="text-4xl mb-4">⚠️</p>
-          <h2 className="text-xl font-bold text-foreground mb-2">
-            Connection Error
-          </h2>
-          <p className="text-muted text-sm mb-4">{error}</p>
-          <p className="text-muted text-xs">
-            Make sure the backend is running on{" "}
-            <code className="text-accent-blue">localhost:8000</code>
-          </p>
+        <div className="text-center max-w-sm">
+          <p className="text-text-primary text-sm font-medium mb-1">Cannot reach backend</p>
+          <p className="text-text-muted text-xs mb-4">{error}</p>
           <button
-            onClick={() => {
-              setLoading(true);
-              fetchData();
-            }}
-            className="mt-6 px-6 py-2 bg-accent-blue/20 border border-accent-blue/30 text-accent-blue rounded-xl text-sm font-medium hover:bg-accent-blue/30 transition-colors"
+            onClick={() => { setLoading(true); fetchData(); }}
+            className="text-xs text-accent hover:underline"
           >
-            Retry
+            Try again
           </button>
         </div>
       </div>
@@ -278,254 +161,230 @@ export default function DashboardPage() {
   const hasData = summary && summary.total_requests > 0;
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-card-border bg-card-bg/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-accent-blue to-accent-purple flex items-center justify-center text-white text-sm font-bold">
-              AI
-            </div>
-            <div>
-              <h1 className="text-lg font-bold text-foreground tracking-tight">
-                AI Telemetry
-              </h1>
-              <p className="text-xs text-muted -mt-0.5">
-                Token & Cost Dashboard
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-accent-emerald/10 border border-accent-emerald/20">
-              <div className="w-2 h-2 rounded-full bg-accent-emerald animate-pulse" />
-              <span className="text-xs text-accent-emerald font-medium">
-                Live
-              </span>
-            </div>
-          </div>
+    <div className="min-h-screen bg-bg-primary">
+      {/* ── Nav ─────────────────────────────────────────────────── */}
+      <nav className="border-b border-border-subtle sticky top-0 z-50 bg-bg-primary/80 backdrop-blur-md">
+        <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
+          <span className="text-sm font-semibold text-text-primary tracking-tight">
+            telemetry<span className="text-accent">.</span>
+          </span>
+          {hasData && (
+            <span className="text-[11px] text-text-muted">
+              {summary.total_requests} request{summary.total_requests !== 1 && "s"} tracked
+            </span>
+          )}
         </div>
-      </header>
+      </nav>
 
-      <main className="max-w-7xl mx-auto px-6 py-8">
+      <main className="max-w-6xl mx-auto px-6 py-10">
         {!hasData ? (
-          <EmptyState />
+          /* ── Empty state ───────────────────────────────────────── */
+          <div className="text-center py-32">
+            <p className="text-text-primary text-sm font-medium mb-2">
+              No data yet
+            </p>
+            <p className="text-text-muted text-xs max-w-xs mx-auto leading-relaxed">
+              Point your LLM API calls to{" "}
+              <code className="text-accent">localhost:8000</code>{" "}
+              and usage will appear here.
+            </p>
+          </div>
         ) : (
           <>
-            {/* Summary Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-              <StatCard
-                label="Total Requests"
-                value={summary.total_requests.toLocaleString()}
-                subtitle={`${summary.models_used.length} model${summary.models_used.length !== 1 ? "s" : ""} used`}
-                accentColor="#3b82f6"
-                icon="📊"
-              />
-              <StatCard
-                label="Total Tokens"
-                value={summary.total_tokens.toLocaleString()}
-                subtitle={`${summary.total_prompt_tokens.toLocaleString()} in / ${summary.total_completion_tokens.toLocaleString()} out`}
-                accentColor="#8b5cf6"
-                icon="🔤"
-              />
-              <StatCard
-                label="Total Cost"
-                value={`$${summary.total_cost.toFixed(4)}`}
-                subtitle="Based on model pricing"
-                accentColor="#10b981"
-                icon="💰"
-              />
-              <StatCard
-                label="Avg Latency"
-                value={`${summary.avg_latency_ms.toLocaleString()}ms`}
-                subtitle="Per request average"
-                accentColor="#f59e0b"
-                icon="⚡"
-              />
+            {/* ── Metrics row ──────────────────────────────────── */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-px bg-border rounded-xl overflow-hidden mb-10">
+              {[
+                {
+                  label: "Requests",
+                  value: summary.total_requests.toLocaleString(),
+                },
+                {
+                  label: "Tokens",
+                  value: summary.total_tokens.toLocaleString(),
+                  detail: `${summary.total_prompt_tokens.toLocaleString()} in · ${summary.total_completion_tokens.toLocaleString()} out`,
+                },
+                {
+                  label: "Cost",
+                  value: `$${summary.total_cost < 0.01 ? summary.total_cost.toFixed(6) : summary.total_cost.toFixed(2)}`,
+                },
+                {
+                  label: "Avg latency",
+                  value: `${summary.avg_latency_ms.toLocaleString()} ms`,
+                },
+              ].map((m) => (
+                <div key={m.label} className="bg-bg-secondary p-5">
+                  <p className="text-[11px] text-text-muted uppercase tracking-widest mb-2">
+                    {m.label}
+                  </p>
+                  <p className="text-xl font-semibold text-text-primary tabular-nums">
+                    {m.value}
+                  </p>
+                  {m.detail && (
+                    <p className="text-[11px] text-text-muted mt-1">{m.detail}</p>
+                  )}
+                </div>
+              ))}
             </div>
 
-            {/* Charts Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-              {/* Cost Over Time — spans 2 columns */}
-              <div className="lg:col-span-2 bg-card-bg border border-card-border rounded-2xl p-6">
-                <h3 className="text-sm font-semibold text-foreground mb-4 tracking-wide">
-                  Cost & Tokens Over Time
-                </h3>
-                <ResponsiveContainer width="100%" height={280}>
+            {/* ── Charts ───────────────────────────────────────── */}
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-10">
+              {/* Spend over time */}
+              <div className="lg:col-span-3 border border-border rounded-xl p-5">
+                <p className="text-xs text-text-muted uppercase tracking-widest mb-5">
+                  Spend over time
+                </p>
+                <ResponsiveContainer width="100%" height={240}>
                   <AreaChart data={costOverTime}>
                     <defs>
-                      <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                      </linearGradient>
-                      <linearGradient id="tokenGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                      <linearGradient id="fillCost" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.15} />
+                        <stop offset="100%" stopColor="#a78bfa" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 12 }} />
+                    <CartesianGrid stroke="#27272a" strokeDasharray="3 3" vertical={false} />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: "#71717a", fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
                     <YAxis
-                      yAxisId="cost"
-                      orientation="left"
-                      tick={{ fill: "#64748b", fontSize: 12 }}
+                      tick={{ fill: "#71717a", fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
                       tickFormatter={(v) => `$${v}`}
+                      width={48}
                     />
-                    <YAxis
-                      yAxisId="tokens"
-                      orientation="right"
-                      tick={{ fill: "#64748b", fontSize: 12 }}
-                    />
-                    <Tooltip content={<CustomTooltip />} />
+                    <Tooltip content={<ChartTooltip />} />
                     <Area
-                      yAxisId="cost"
                       type="monotone"
                       dataKey="cost"
-                      stroke="#10b981"
-                      strokeWidth={2}
-                      fill="url(#costGradient)"
+                      stroke="#a78bfa"
+                      strokeWidth={1.5}
+                      fill="url(#fillCost)"
                       name="Cost ($)"
-                    />
-                    <Area
-                      yAxisId="tokens"
-                      type="monotone"
-                      dataKey="tokens"
-                      stroke="#8b5cf6"
-                      strokeWidth={2}
-                      fill="url(#tokenGradient)"
-                      name="Tokens"
                     />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
 
-              {/* Model Distribution Pie */}
-              <div className="bg-card-bg border border-card-border rounded-2xl p-6">
-                <h3 className="text-sm font-semibold text-foreground mb-4 tracking-wide">
-                  Model Distribution
-                </h3>
-                <ResponsiveContainer width="100%" height={280}>
-                  <PieChart>
-                    <Pie
-                      data={modelDistribution}
-                      cx="50%"
-                      cy="45%"
-                      innerRadius={55}
-                      outerRadius={85}
-                      paddingAngle={4}
-                      dataKey="value"
-                    >
-                      {modelDistribution.map((_, index) => (
-                        <Cell
-                          key={`cell-${index}`}
-                          fill={CHART_COLORS[index % CHART_COLORS.length]}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend
-                      iconType="circle"
-                      iconSize={8}
-                      wrapperStyle={{ fontSize: "12px", color: "#94a3b8" }}
+              {/* Latency by model */}
+              <div className="lg:col-span-2 border border-border rounded-xl p-5">
+                <p className="text-xs text-text-muted uppercase tracking-widest mb-5">
+                  Latency by model
+                </p>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={latencyPerModel} layout="vertical" barSize={16}>
+                    <CartesianGrid stroke="#27272a" strokeDasharray="3 3" horizontal={false} />
+                    <XAxis
+                      type="number"
+                      tick={{ fill: "#71717a", fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                      tickFormatter={(v) => `${v}ms`}
                     />
-                  </PieChart>
+                    <YAxis
+                      type="category"
+                      dataKey="model"
+                      tick={{ fill: "#a1a1aa", fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={100}
+                    />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Bar dataKey="latency" name="Avg (ms)" radius={[0, 4, 4, 0]}>
+                      {latencyPerModel.map((_, i) => (
+                        <Cell key={i} fill={i % 2 === 0 ? "#a78bfa" : "#7c3aed"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
-            {/* Latency Per Model */}
-            <div className="bg-card-bg border border-card-border rounded-2xl p-6 mb-8">
-              <h3 className="text-sm font-semibold text-foreground mb-4 tracking-wide">
-                Average Latency by Model
-              </h3>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={latencyPerModel} barCategoryGap="20%">
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis dataKey="model" tick={{ fill: "#64748b", fontSize: 12 }} />
-                  <YAxis
-                    tick={{ fill: "#64748b", fontSize: 12 }}
-                    tickFormatter={(v) => `${v}ms`}
-                  />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Bar
-                    dataKey="avg_latency"
-                    name="Avg Latency (ms)"
-                    radius={[8, 8, 0, 0]}
-                  >
-                    {latencyPerModel.map((_, index) => (
-                      <Cell
-                        key={`bar-${index}`}
-                        fill={CHART_COLORS[index % CHART_COLORS.length]}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {/* ── Model breakdown ──────────────────────────────── */}
+            {summary.models_used.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-10">
+                {summary.models_used.map((model) => {
+                  const modelLogs = logs.filter((l) => l.model_name === model);
+                  const totalTokens = modelLogs.reduce((s, l) => s + l.total_tokens, 0);
+                  const totalCost = modelLogs.reduce((s, l) => s + (l.total_cost || 0), 0);
+                  return (
+                    <div
+                      key={model}
+                      className="border border-border rounded-lg px-4 py-3 bg-bg-secondary text-xs"
+                    >
+                      <span className="text-text-primary font-medium">{model}</span>
+                      <span className="text-text-muted ml-3">
+                        {modelLogs.length} req · {totalTokens.toLocaleString()} tok · ${totalCost.toFixed(4)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
-            {/* Logs Table */}
-            <div className="bg-card-bg border border-card-border rounded-2xl overflow-hidden">
-              <div className="px-6 py-4 border-b border-card-border">
-                <h3 className="text-sm font-semibold text-foreground tracking-wide">
-                  Request Logs
-                </h3>
+            {/* ── Logs table ───────────────────────────────────── */}
+            <div className="border border-border rounded-xl overflow-hidden">
+              <div className="px-5 py-3 border-b border-border">
+                <p className="text-xs text-text-muted uppercase tracking-widest">
+                  Recent requests
+                </p>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-sm" id="logs-table">
+                <table className="w-full text-xs">
                   <thead>
-                    <tr className="border-b border-card-border text-left">
-                      <th className="px-6 py-3 text-muted font-medium text-xs uppercase tracking-wider">
-                        Timestamp
-                      </th>
-                      <th className="px-6 py-3 text-muted font-medium text-xs uppercase tracking-wider">
-                        Model
-                      </th>
-                      <th className="px-6 py-3 text-muted font-medium text-xs uppercase tracking-wider">
-                        Provider
-                      </th>
-                      <th className="px-6 py-3 text-muted font-medium text-xs uppercase tracking-wider text-right">
-                        Prompt
-                      </th>
-                      <th className="px-6 py-3 text-muted font-medium text-xs uppercase tracking-wider text-right">
-                        Completion
-                      </th>
-                      <th className="px-6 py-3 text-muted font-medium text-xs uppercase tracking-wider text-right">
-                        Cost
-                      </th>
-                      <th className="px-6 py-3 text-muted font-medium text-xs uppercase tracking-wider text-right">
-                        Latency
-                      </th>
+                    <tr className="border-b border-border text-left">
+                      {["Time", "Model", "Provider", "In", "Out", "Cost", "Latency"].map(
+                        (h) => (
+                          <th
+                            key={h}
+                            className={`px-5 py-2.5 text-text-muted font-medium ${
+                              ["In", "Out", "Cost", "Latency"].includes(h)
+                                ? "text-right"
+                                : ""
+                            }`}
+                          >
+                            {h}
+                          </th>
+                        )
+                      )}
                     </tr>
                   </thead>
                   <tbody>
                     {logs.map((log) => (
                       <tr
                         key={log.id}
-                        className="border-b border-card-border/50 hover:bg-table-hover transition-colors"
+                        className="border-b border-border-subtle hover:bg-bg-secondary/50 transition-colors"
                       >
-                        <td className="px-6 py-3 text-muted font-mono text-xs">
-                          {new Date(log.timestamp).toLocaleString()}
+                        <td className="px-5 py-2.5 text-text-muted font-mono whitespace-nowrap">
+                          {new Date(log.timestamp).toLocaleString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            second: "2-digit",
+                          })}
                         </td>
-                        <td className="px-6 py-3">
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-accent-blue/10 text-accent-blue border border-accent-blue/20">
-                            {log.model_name}
-                          </span>
+                        <td className="px-5 py-2.5 text-text-primary font-medium">
+                          {log.model_name}
                         </td>
-                        <td className="px-6 py-3 text-muted text-xs capitalize">
+                        <td className="px-5 py-2.5 text-text-muted capitalize">
                           {log.provider}
                         </td>
-                        <td className="px-6 py-3 text-right font-mono text-xs text-foreground">
+                        <td className="px-5 py-2.5 text-right font-mono text-text-secondary tabular-nums">
                           {log.prompt_tokens.toLocaleString()}
                         </td>
-                        <td className="px-6 py-3 text-right font-mono text-xs text-foreground">
+                        <td className="px-5 py-2.5 text-right font-mono text-text-secondary tabular-nums">
                           {log.completion_tokens.toLocaleString()}
                         </td>
-                        <td className="px-6 py-3 text-right font-mono text-xs text-accent-emerald">
+                        <td className="px-5 py-2.5 text-right font-mono text-positive tabular-nums">
                           {log.total_cost !== null
                             ? `$${log.total_cost.toFixed(6)}`
-                            : "N/A"}
+                            : "—"}
                         </td>
-                        <td className="px-6 py-3 text-right font-mono text-xs text-accent-amber">
-                          {log.latency_ms.toLocaleString()}ms
+                        <td className="px-5 py-2.5 text-right font-mono text-text-secondary tabular-nums">
+                          {log.latency_ms.toLocaleString()} ms
                         </td>
                       </tr>
                     ))}
@@ -536,13 +395,6 @@ export default function DashboardPage() {
           </>
         )}
       </main>
-
-      {/* Footer */}
-      <footer className="border-t border-card-border mt-auto py-6">
-        <p className="text-center text-xs text-muted">
-          AI Telemetry Tracker · Open Source · MIT License
-        </p>
-      </footer>
     </div>
   );
 }

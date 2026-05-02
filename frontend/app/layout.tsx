@@ -5,12 +5,12 @@ import "./globals.css";
 const inter = Inter({
   variable: "--font-geist-sans",
   subsets: ["latin"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
-  title: "AI Telemetry Dashboard",
-  description:
-    "Track token usage, costs, and latency across your LLM API calls.",
+  title: "AI Telemetry",
+  description: "Token usage, costs, and latency tracking for LLM APIs.",
 };
 
 export default function RootLayout({
@@ -19,8 +19,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="en" className={`${inter.variable} h-full`}>
+      <body className="min-h-full">{children}</body>
     </html>
   );
 }
