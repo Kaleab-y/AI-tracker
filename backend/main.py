@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router as api_router
 from database.connection import create_db_and_tables
@@ -19,6 +20,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Telemetry Proxy", lifespan=lifespan)
+
+# Allow the Next.js frontend to access the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Register the router
 app.include_router(api_router)
