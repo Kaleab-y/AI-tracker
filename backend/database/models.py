@@ -13,4 +13,5 @@ class RequestLog(SQLModel, table=True):
     provider: str
     prompt_tokens: Optional[int] = Field(default=0)
     completion_tokens: Optional[int] = Field(default=0)
+    total_cost: Optional[float] = Field(default=None)
     latency_ms: int

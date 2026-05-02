@@ -1,5 +1,14 @@
+"""
+Proxy routing for OpenAI-compatible chat completions.
+
+This module intercepts requests, forwards them to the target provider,
+streams responses back to the client, and asynchronously logs token
+usage and cost to the local database.
+"""
+
 import json
 import os
+import time
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -8,31 +17,110 @@ from sqlmodel import Session
 
 from database.connection import get_session
 from database.models import RequestLog
+from utils.pricing import calculate_cost
 
 router = APIRouter()
 
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Background database logging
+# ──────────────────────────────────────────────────────────────────────
+
+
 def log_request_to_db(
-    model_name: str, provider: str, latency_ms: int, session: Session
-):
+    model_name: str,
+    provider: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    latency_ms: int,
+    session: Session,
+) -> None:
     """
-    Background task to log the request to the database.
+    Insert a RequestLog record with real token counts and calculated cost.
+    Runs as a FastAPI BackgroundTask so it never blocks the response.
     """
     try:
+        total_cost = calculate_cost(model_name, prompt_tokens, completion_tokens)
+
         log_entry = RequestLog(
             model_name=model_name,
             provider=provider,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_cost=total_cost,
             latency_ms=latency_ms,
-            prompt_tokens=0,
-            completion_tokens=0,
         )
         session.add(log_entry)
         session.commit()
-        print(f"Logged request for model {model_name} with latency {latency_ms}ms")
-    except Exception as e:
-        print(f"Failed to log to database: {e}")
+
+        cost_display = f"${total_cost:.6f}" if total_cost is not None else "N/A"
+        print(
+            f"[LOG] model={model_name}  "
+            f"prompt={prompt_tokens}  completion={completion_tokens}  "
+            f"cost={cost_display}  latency={latency_ms}ms"
+        )
+    except Exception as exc:
+        print(f"[ERROR] Failed to log to database: {exc}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Streaming token extraction helpers
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _parse_sse_line(line: str) -> dict | None:
+    """
+    Parse a single Server-Sent Events line.
+    Returns the parsed JSON object, or None if the line is not data.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("data:"):
+        return None
+
+    payload = stripped[len("data:") :].strip()
+    if payload == "[DONE]":
+        return None
+
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_usage_from_chunks(
+    raw_chunks: list[bytes],
+) -> tuple[int, int]:
+    """
+    Walk through all raw SSE chunks collected during a stream and find
+    the usage summary that OpenAI appends when stream_options.include_usage
+    is True.
+
+    Returns (prompt_tokens, completion_tokens). Defaults to (0, 0) if
+    no usage data is found.
+    """
+    prompt_tokens = 0
+    completion_tokens = 0
+
+    for raw_chunk in raw_chunks:
+        text = raw_chunk.decode("utf-8", errors="replace")
+        for line in text.split("\n"):
+            parsed = _parse_sse_line(line)
+            if parsed is None:
+                continue
+
+            usage = parsed.get("usage")
+            if usage:
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+
+    return prompt_tokens, completion_tokens
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Proxy endpoint
+# ──────────────────────────────────────────────────────────────────────
 
 
 @router.post("/v1/chat/completions")
@@ -41,54 +129,120 @@ async def proxy_chat_completions(
     background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
 ):
-    # Extract the payload
+    """
+    Pass-through proxy for OpenAI chat completions.
+    Supports both streaming and non-streaming requests.
+    """
+    # ── Parse the incoming request body ──────────────────────────────
     try:
-        body = await request.json()
+        request_body = await request.json()
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    model_name = body.get("model", "unknown")
-    provider = "openai"  # Defaulting for this proxy endpoint
+    model_name: str = request_body.get("model", "unknown")
+    provider: str = "openai"
+    is_streaming: bool = request_body.get("stream", False)
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set")
 
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    # ── Inject stream_options for usage tracking ─────────────────────
+    # When the client requests streaming, we ask OpenAI to append a
+    # final chunk containing token usage statistics.
+    if is_streaming:
+        request_body.setdefault("stream_options", {})
+        request_body["stream_options"]["include_usage"] = True
 
-    # Start timing (simplified)
-    import time
+    outbound_headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
     start_time = time.time()
 
-    async def stream_response():
-        # Use httpx to stream the response from OpenAI
-        async with httpx.AsyncClient() as client:
-            try:
-                # We use stream() to proxy the chunks as they arrive
-                async with client.stream(
-                    "POST",
-                    OPENAI_API_URL,
-                    headers=headers,
-                    json=body,
-                    timeout=httpx.Timeout(60.0),
-                ) as response:
-                    # If OpenAI returns an error, we should ideally handle it gracefully,
-                    # but for now we'll pass the status code back if it's not a stream
+    # ── Streaming path ───────────────────────────────────────────────
+    if is_streaming:
+        collected_chunks: list[bytes] = []
 
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
+        async def generate_stream():
+            async with httpx.AsyncClient() as client:
+                try:
+                    async with client.stream(
+                        "POST",
+                        OPENAI_API_URL,
+                        headers=outbound_headers,
+                        json=request_body,
+                        timeout=httpx.Timeout(120.0),
+                    ) as upstream_response:
+                        async for chunk in upstream_response.aiter_bytes():
+                            collected_chunks.append(chunk)
+                            yield chunk
 
-            except httpx.RequestError as exc:
-                yield f'data: {{"error": "Request to OpenAI failed: {str(exc)}"}}\n\n'.encode(
-                    "utf-8"
-                )
+                except httpx.RequestError as exc:
+                    error_payload = json.dumps(
+                        {"error": f"Upstream request failed: {exc}"}
+                    )
+                    yield f"data: {error_payload}\n\n".encode("utf-8")
 
-        # Calculate latency and schedule the background task to log it
-        latency_ms = int((time.time() - start_time) * 1000)
-        background_tasks.add_task(
-            log_request_to_db, model_name, provider, latency_ms, session
+            # ── After stream completes, extract usage and log ────────
+            latency_ms = int((time.time() - start_time) * 1000)
+            prompt_tokens, completion_tokens = _extract_usage_from_chunks(
+                collected_chunks
+            )
+
+            background_tasks.add_task(
+                log_request_to_db,
+                model_name,
+                provider,
+                prompt_tokens,
+                completion_tokens,
+                latency_ms,
+                session,
+            )
+
+        return StreamingResponse(
+            generate_stream(),
+            media_type="text/event-stream",
         )
 
-    # Return a streaming response back to the client
-    return StreamingResponse(stream_response(), media_type="text/event-stream")
+    # ── Non-streaming path ───────────────────────────────────────────
+    async with httpx.AsyncClient() as client:
+        try:
+            upstream_response = await client.post(
+                OPENAI_API_URL,
+                headers=outbound_headers,
+                json=request_body,
+                timeout=httpx.Timeout(120.0),
+            )
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream request failed: {exc}",
+            )
+
+    latency_ms = int((time.time() - start_time) * 1000)
+
+    # Extract usage from the standard JSON response
+    response_json = upstream_response.json()
+    usage = response_json.get("usage", {})
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+
+    background_tasks.add_task(
+        log_request_to_db,
+        model_name,
+        provider,
+        prompt_tokens,
+        completion_tokens,
+        latency_ms,
+        session,
+    )
+
+    # Return the raw upstream response to the client
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        content=response_json,
+        status_code=upstream_response.status_code,
+    )
