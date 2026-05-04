@@ -3,4 +3,5 @@ uvicorn
 sqlmodel
 httpx
 python-dotenv
+litellm
 ruff

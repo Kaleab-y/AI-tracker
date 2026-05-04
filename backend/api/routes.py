@@ -1,18 +1,24 @@
 """
-Proxy routing for OpenAI-compatible chat completions.
+Proxy routing for multi-provider LLM chat completions.
 
-This module intercepts requests, forwards them to the target provider,
-streams responses back to the client, and asynchronously logs token
-usage and cost to the local database.
+This module intercepts OpenAI-formatted requests, routes them through
+LiteLLM (which supports OpenAI, Anthropic, Gemini, and many more),
+streams the response back to the client, and asynchronously logs
+token usage and cost to the local database.
+
+Supported model prefixes (via LiteLLM):
+  - OpenAI:    gpt-4o, gpt-4.1, o1, o3, ...
+  - Anthropic: claude-3-5-sonnet-... (pass as "anthropic/claude-...")
+  - Google:    gemini-2.0-flash, gemini-2.5-pro, ...
 """
 
 import json
 import os
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
-import httpx
+import litellm
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session, select
@@ -21,9 +27,24 @@ from database.connection import get_session
 from database.models import RequestLog
 from utils.pricing import calculate_cost
 
+# Suppress LiteLLM's verbose startup/request logging
+litellm.suppress_debug_info = True
+
 router = APIRouter()
 
-OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+
+def _detect_provider(model_name: str) -> str:
+    """Infer the provider name from the model string."""
+    m = model_name.lower()
+    if m.startswith("gpt") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
+        return "openai"
+    if m.startswith("claude") or m.startswith("anthropic/"):
+        return "anthropic"
+    if m.startswith("gemini") or m.startswith("google/"):
+        return "google"
+    if m.startswith("mistral") or m.startswith("mixtral"):
+        return "mistral"
+    return "unknown"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -68,60 +89,7 @@ def log_request_to_db(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Streaming token extraction helpers
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _parse_sse_line(line: str) -> dict | None:
-    """
-    Parse a single Server-Sent Events line.
-    Returns the parsed JSON object, or None if the line is not data.
-    """
-    stripped = line.strip()
-    if not stripped.startswith("data:"):
-        return None
-
-    payload = stripped[len("data:") :].strip()
-    if payload == "[DONE]":
-        return None
-
-    try:
-        return json.loads(payload)
-    except json.JSONDecodeError:
-        return None
-
-
-def _extract_usage_from_chunks(
-    raw_chunks: list[bytes],
-) -> tuple[int, int]:
-    """
-    Walk through all raw SSE chunks collected during a stream and find
-    the usage summary that OpenAI appends when stream_options.include_usage
-    is True.
-
-    Returns (prompt_tokens, completion_tokens). Defaults to (0, 0) if
-    no usage data is found.
-    """
-    prompt_tokens = 0
-    completion_tokens = 0
-
-    for raw_chunk in raw_chunks:
-        text = raw_chunk.decode("utf-8", errors="replace")
-        for line in text.split("\n"):
-            parsed = _parse_sse_line(line)
-            if parsed is None:
-                continue
-
-            usage = parsed.get("usage")
-            if usage:
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-
-    return prompt_tokens, completion_tokens
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Proxy endpoint
+# Proxy endpoint — powered by LiteLLM
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -132,67 +100,70 @@ async def proxy_chat_completions(
     session: Session = Depends(get_session),
 ):
     """
-    Pass-through proxy for OpenAI chat completions.
-    Supports both streaming and non-streaming requests.
+    Pass-through proxy for LLM chat completions (OpenAI, Anthropic, Gemini, …).
+
+    Accepts an OpenAI-formatted request body. The model name determines
+    which provider LiteLLM routes to. API keys are loaded automatically
+    from environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.).
     """
-    # ── Parse the incoming request body ──────────────────────────────
     try:
-        request_body = await request.json()
+        request_body: dict[str, Any] = await request.json()
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    model_name: str = request_body.get("model", "unknown")
-    provider: str = "openai"
+    model_name: str = request_body.get("model", "gpt-4o-mini")
+    provider: str = _detect_provider(model_name)
     is_streaming: bool = request_body.get("stream", False)
+    messages: list[dict] = request_body.get("messages", [])
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set")
-
-    # ── Inject stream_options for usage tracking ─────────────────────
-    # When the client requests streaming, we ask OpenAI to append a
-    # final chunk containing token usage statistics.
-    if is_streaming:
-        request_body.setdefault("stream_options", {})
-        request_body["stream_options"]["include_usage"] = True
-
-    outbound_headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
+    # Pull any extra params the caller may have forwarded
+    extra_params = {
+        k: v
+        for k, v in request_body.items()
+        if k not in ("model", "messages", "stream")
     }
 
     start_time = time.time()
 
     # ── Streaming path ───────────────────────────────────────────────
     if is_streaming:
-        collected_chunks: list[bytes] = []
+        prompt_tokens = 0
+        completion_tokens = 0
 
         async def generate_stream():
-            async with httpx.AsyncClient() as client:
-                try:
-                    async with client.stream(
-                        "POST",
-                        OPENAI_API_URL,
-                        headers=outbound_headers,
-                        json=request_body,
-                        timeout=httpx.Timeout(120.0),
-                    ) as upstream_response:
-                        async for chunk in upstream_response.aiter_bytes():
-                            collected_chunks.append(chunk)
-                            yield chunk
+            nonlocal prompt_tokens, completion_tokens
+            try:
+                response = await litellm.acompletion(
+                    model=model_name,
+                    messages=messages,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    **extra_params,
+                )
+                async for chunk in response:
+                    # Capture usage from the final chunk
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        prompt_tokens = chunk.usage.prompt_tokens or 0
+                        completion_tokens = chunk.usage.completion_tokens or 0
 
-                except httpx.RequestError as exc:
-                    error_payload = json.dumps(
-                        {"error": f"Upstream request failed: {exc}"}
-                    )
-                    yield f"data: {error_payload}\n\n".encode("utf-8")
+                    # Yield SSE-formatted chunk to the client
+                    chunk_dict = chunk.model_dump(exclude_unset=True)
+                    yield f"data: {json.dumps(chunk_dict)}\n\n".encode("utf-8")
 
-            # ── After stream completes, extract usage and log ────────
+                yield b"data: [DONE]\n\n"
+
+            except litellm.exceptions.AuthenticationError:
+                err = json.dumps({"error": f"Invalid API key for provider: {provider}"})
+                yield f"data: {err}\n\n".encode("utf-8")
+            except litellm.exceptions.NotFoundError as exc:
+                err = json.dumps({"error": f"Model not found: {exc}"})
+                yield f"data: {err}\n\n".encode("utf-8")
+            except Exception as exc:
+                err = json.dumps({"error": f"Upstream error: {exc}"})
+                yield f"data: {err}\n\n".encode("utf-8")
+
+            # Log after stream completes
             latency_ms = int((time.time() - start_time) * 1000)
-            prompt_tokens, completion_tokens = _extract_usage_from_chunks(
-                collected_chunks
-            )
-
             background_tasks.add_task(
                 log_request_to_db,
                 model_name,
@@ -203,33 +174,30 @@ async def proxy_chat_completions(
                 session,
             )
 
-        return StreamingResponse(
-            generate_stream(),
-            media_type="text/event-stream",
-        )
+        return StreamingResponse(generate_stream(), media_type="text/event-stream")
 
     # ── Non-streaming path ───────────────────────────────────────────
-    async with httpx.AsyncClient() as client:
-        try:
-            upstream_response = await client.post(
-                OPENAI_API_URL,
-                headers=outbound_headers,
-                json=request_body,
-                timeout=httpx.Timeout(120.0),
-            )
-        except httpx.RequestError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Upstream request failed: {exc}",
-            )
+    try:
+        response = await litellm.acompletion(
+            model=model_name,
+            messages=messages,
+            stream=False,
+            **extra_params,
+        )
+    except litellm.exceptions.AuthenticationError:
+        raise HTTPException(
+            status_code=401, detail=f"Invalid API key for provider: {provider}"
+        )
+    except litellm.exceptions.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Model not found: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Upstream error: {exc}")
 
     latency_ms = int((time.time() - start_time) * 1000)
 
-    # Extract usage from the standard JSON response
-    response_json = upstream_response.json()
-    usage = response_json.get("usage", {})
-    prompt_tokens = usage.get("prompt_tokens", 0)
-    completion_tokens = usage.get("completion_tokens", 0)
+    usage = response.usage
+    prompt_tokens = usage.prompt_tokens if usage else 0
+    completion_tokens = usage.completion_tokens if usage else 0
 
     background_tasks.add_task(
         log_request_to_db,
@@ -241,11 +209,7 @@ async def proxy_chat_completions(
         session,
     )
 
-    # Return the raw upstream response to the client
-    return JSONResponse(
-        content=response_json,
-        status_code=upstream_response.status_code,
-    )
+    return JSONResponse(content=response.model_dump())
 
 
 # ──────────────────────────────────────────────────────────────────────
