@@ -16,45 +16,55 @@ This project acts as a **local-first, ultra-fast proxy**. It intercepts the requ
 
 ## ⚡ Quick Start
 
-### 1. Clone the repository
+### Using Docker (Recommended)
+The easiest way to run the entire stack (proxy + dashboard) is with Docker Compose.
 
+1. Clone the repository
+   ```bash
+   git clone https://github.com/Kaleab-y/AI-tracker.git
+   cd AI-tracker
+   ```
+
+2. Set up your environment variables
+   ```bash
+   cp backend/.env.example backend/.env
+   # Edit backend/.env and add your OPENAI_API_KEY
+   ```
+
+3. Start the stack
+   ```bash
+   docker compose up -d --build
+   ```
+
+- The **Proxy** is now running on `http://localhost:8000`
+- The **Dashboard** is now running on `http://localhost:3000`
+
+### Manual Setup (Local Development)
+
+If you prefer to run the services without Docker:
+
+#### 1. Backend Proxy
 ```bash
-git clone https://github.com/yourusername/ai-telemetry-tracker.git
-cd ai-telemetry-tracker/backend
-```
-
-### 2. Set up the environment
-
-Create a `.env` file in the `backend/` directory by copying the example:
-
-```bash
-cp .env.example .env
-```
-
-Add your OpenAI API key to the `.env` file:
-```env
-OPENAI_API_KEY=sk-your-actual-api-key
-```
-
-### 3. Install dependencies
-
-```bash
+cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-### 4. Run the proxy
-
-```bash
+cp .env.example .env
+# Add OPENAI_API_KEY to .env
 uvicorn main:app --reload
 ```
 
-The proxy will run on `http://127.0.0.1:8000`.
+#### 2. Frontend Dashboard
+In a new terminal:
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-### 5. Test the Proxy
+### Test the Proxy
 
-Send a standard OpenAI request to the proxy:
+Send a standard OpenAI request to the local proxy:
 
 ```bash
 curl http://127.0.0.1:8000/v1/chat/completions \
