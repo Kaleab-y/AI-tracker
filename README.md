@@ -1,81 +1,92 @@
-# AI Telemetry and Tracking Platform
+# AI Tracker
 
-A free, open-source AI Gateway and Telemetry Proxy. This project allows developers to point their LLM API calls (e.g., to OpenAI) to a local proxy which seamlessly streams responses back to the user while asynchronously tracking token usage, cost, and latency in the background.
+**Local AI request telemetry with a FastAPI proxy and a Next.js dashboard.**
 
-## 🚀 Why It Exists
+AI Tracker routes OpenAI-formatted chat completion requests through LiteLLM and stores token usage, estimated cost, and latency in a local SQLite database. A web dashboard helps explore that telemetry.
 
-Observability is critical when building AI applications. You need to know how fast your requests are processing, how many tokens you are consuming, and what the associated costs are. However, passing every request through a slow, blocking cloud proxy ruins the user experience (especially for streaming interfaces).
+## Features
 
-This project acts as a **local-first, ultra-fast proxy**. It intercepts the request, streams the response immediately back to the client, and handles the logging to a local SQLite database in the background.
+- Streaming and non-streaming chat completion requests.
+- Provider routing through LiteLLM, including OpenAI, Anthropic, and Gemini.
+- Background telemetry logging after requests.
+- Log filtering by model, provider, and date, with pagination.
+- Dashboard summaries and Recharts visualizations.
 
-## 🏗️ Architecture
+## Architecture
 
-- **Backend Proxy**: Built with Python, FastAPI, and `httpx` for fast, asynchronous streaming.
-- **Database**: SQLite integrated with SQLModel (easily swappable to PostgreSQL).
-- **Frontend Dashboard**: (Coming Soon!) A Next.js application to visualize the telemetry data.
+| Component | Technologies | Purpose |
+| --- | --- | --- |
+| Backend | Python, FastAPI, LiteLLM | Proxy requests and expose telemetry APIs |
+| Storage | SQLite, SQLModel | Persist request metadata |
+| Dashboard | Next.js, TypeScript, Recharts | Explore usage, cost, and latency |
+| Local stack | Docker Compose | Run the backend and dashboard together |
 
-## ⚡ Quick Start
+## Quick start with Docker
 
-### Using Docker (Recommended)
-The easiest way to run the entire stack (proxy + dashboard) is with Docker Compose.
+```bash
+git clone https://github.com/Kaleab-y/AI-tracker.git
+cd AI-tracker
+cp backend/.env.example .env
+# Set OPENAI_API_KEY in the root .env file.
+docker compose up -d --build
+```
 
-1. Clone the repository
-   ```bash
-   git clone https://github.com/Kaleab-y/AI-tracker.git
-   cd AI-tracker
-   ```
+The current Compose configuration forwards the OpenAI key to the backend. Other provider keys must also be forwarded in Compose to use those providers.
 
-2. Set up your environment variables
-   ```bash
-   cp backend/.env.example backend/.env
-   # Edit backend/.env and add your OPENAI_API_KEY
-   ```
+- Dashboard: http://localhost:3000
+- Proxy: http://localhost:8000
 
-3. Start the stack
-   ```bash
-   docker compose up -d --build
-   ```
+## Manual development
 
-- The **Proxy** is now running on `http://localhost:8000`
-- The **Dashboard** is now running on `http://localhost:3000`
+In the backend directory:
 
-### Manual Setup (Local Development)
-
-If you prefer to run the services without Docker:
-
-#### 1. Backend Proxy
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
+# Windows PowerShell: .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 cp .env.example .env
-# Add OPENAI_API_KEY to .env
+# Set the API key for the provider you intend to use.
 uvicorn main:app --reload
 ```
 
-#### 2. Frontend Dashboard
-In a new terminal:
+In a second terminal, starting from the repository root:
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### Test the Proxy
+## API overview
 
-Send a standard OpenAI request to the local proxy:
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /v1/chat/completions` | Proxy streaming or non-streaming chat completion requests |
+| `GET /v1/logs` | Retrieve filtered, paginated telemetry |
+| `GET /v1/logs/summary` | Retrieve aggregate request, token, cost, and latency statistics |
 
-```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello!"}], "stream": true}'
+Example request body:
+
+```json
+{
+  "model": "gpt-4o-mini",
+  "messages": [{"role": "user", "content": "Hello!"}],
+  "stream": true
+}
 ```
 
-## 🔒 Security & Privacy
+Use a model available through your configured provider account.
 
-This project strictly adheres to the principle of "opt-in logging". By default, we DO NOT log the contents of your prompts or completions. We only log metadata: `timestamp`, `model_name`, `provider`, `latency_ms`, and `tokens`.
+## Telemetry and privacy
 
-## 📄 License
+The telemetry database stores request metadata rather than prompt or completion text. Requests are forwarded to the selected model provider. Cost values are estimates from the project's pricing table; coverage and provider usage reporting affect their accuracy.
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
+
+## License
+
+[MIT](LICENSE).
