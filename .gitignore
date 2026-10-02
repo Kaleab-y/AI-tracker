@@ -37,6 +37,10 @@ env/
 ENV/
 env.bak/
 venv.bak/
+.venv*/
+.pytest_cache/
+.ruff_cache/
+*.tsbuildinfo
 
 # Database files
 *.db

@@ -1,59 +1,30 @@
-# Contributing to AI Telemetry Tracker
+# Contributing
 
-First off, thank you for considering contributing to this project! It's people like you that make open-source such a fantastic community to learn, inspire, and create.
+Follow the local setup in [README.md](README.md). Use Python 3.12+ and Node.js 22+.
 
-## 🛠️ Local Development Setup
-
-To get started, fork the repository and clone it to your local machine:
+Install backend development dependencies and run all checks before opening a pull request:
 
 ```bash
-git clone https://github.com/<your-username>/ai-telemetry-tracker.git
-cd ai-telemetry-tracker/backend
-```
-
-Create a virtual environment, activate it, and install the dependencies:
-
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-## ✨ Code Quality & Formatting
-
-We maintain a high standard for code quality. For the Python backend, we strictly enforce **PEP 8** standards using **Ruff**. 
-
-Before committing your changes, you must run the formatter and linter:
-
-```bash
-# Format the code
-ruff format .
-
-# Check for linting errors
+cd backend
+pip install -r requirements-dev.txt
 ruff check .
+ruff format --check .
+pytest -q
 ```
 
-If you submit a Pull Request, our CI pipeline will automatically run Ruff. PRs with linting errors will not be merged.
+For dashboard changes:
 
-## 📝 Conventional Commits
+```bash
+cd frontend
+npm ci
+npm run lint
+npm run build
+```
 
-We use [Conventional Commits](https://www.conventionalcommits.org/) for our commit messages. This allows us to auto-generate changelogs. 
+Backend tests use temporary, isolated databases and mocked provider calls. Add coverage for behavior changes, particularly streaming, persistence, filtering, and aggregate accuracy. Never put real provider keys or prompts into fixtures.
 
-Please format your commit messages as follows:
+Keep API changes backward compatible where practical. Schema changes must preserve existing telemetry. Unknown costs and unavailable usage must remain distinguishable from actual zero values. Dashboard cards and charts must use server aggregates rather than whichever request page is visible.
 
-- `feat:` for new features (e.g., `feat: add support for Anthropic models`)
-- `fix:` for bug fixes (e.g., `fix: resolve database locking issue`)
-- `docs:` for documentation changes (e.g., `docs: update quick start guide`)
-- `style:` for formatting changes (e.g., `style: run ruff formatter`)
-- `refactor:` for code refactoring (e.g., `refactor: extract routing logic`)
-- `test:` for adding or updating tests (e.g., `test: add unit tests for proxy`)
-- `chore:` for maintenance tasks (e.g., `chore: update dependencies`)
+For frontend work, read the installed Next.js guides as required by [frontend/AGENTS.md](frontend/AGENTS.md). Verify loading, empty, disconnected, filtered, and populated states, including narrow screens and keyboard navigation.
 
-## 🚀 Submitting a Pull Request
-
-1. Create a new branch: `git checkout -b feature/your-feature-name`
-2. Make your changes and commit them using Conventional Commits.
-3. Push to your fork: `git push origin feature/your-feature-name`
-4. Open a Pull Request against our `main` branch.
-
-We will review your PR as quickly as possible. Thanks again for your contribution!
+Create a branch, use a descriptive Conventional Commit (`feat:`, `fix:`, `docs:`, or `test:`), and open a pull request with a concise behavior summary and validation results. GitHub Actions runs the checks above.

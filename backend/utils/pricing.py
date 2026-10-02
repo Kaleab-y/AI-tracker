@@ -1,98 +1,32 @@
-"""
-Pricing lookup for LLM models.
+"""Estimated USD costs from the installed LiteLLM pricing catalog."""
 
-Prices are stored as USD per 1 million tokens for both input and output.
-This table can be extended as new models or providers are added.
-Last updated: 2026-05-02
-"""
+import math
 
-from typing import Optional
-
-# ──────────────────────────────────────────────────────────────────────
-# Model pricing table
-# Format: "model_name": (input_price_per_1M_tokens, output_price_per_1M_tokens)
-# ──────────────────────────────────────────────────────────────────────
-
-MODEL_PRICING: dict[str, tuple[float, float]] = {
-    # ── OpenAI — GPT-4o family ─────────────────────────────────────────
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o-2024-11-20": (2.50, 10.00),
-    "gpt-4o-2024-08-06": (2.50, 10.00),
-    "gpt-4o-2024-05-13": (5.00, 15.00),
-    "gpt-4o-mini-2024-07-18": (0.15, 0.60),
-    # ── OpenAI — GPT-4.1 family ────────────────────────────────────────
-    "gpt-4.1": (2.00, 8.00),
-    "gpt-4.1-mini": (0.40, 1.60),
-    "gpt-4.1-nano": (0.10, 0.40),
-    # ── OpenAI — GPT-4 Turbo & GPT-4 ──────────────────────────────────
-    "gpt-4-turbo": (10.00, 30.00),
-    "gpt-4-turbo-2024-04-09": (10.00, 30.00),
-    "gpt-4": (30.00, 60.00),
-    "gpt-4-32k": (60.00, 120.00),
-    # ── OpenAI — GPT-3.5 Turbo ─────────────────────────────────────────
-    "gpt-3.5-turbo": (0.50, 1.50),
-    "gpt-3.5-turbo-0125": (0.50, 1.50),
-    "gpt-3.5-turbo-1106": (1.00, 2.00),
-    # ── OpenAI — o-series (reasoning) ─────────────────────────────────
-    "o1": (15.00, 60.00),
-    "o1-mini": (3.00, 12.00),
-    "o1-preview": (15.00, 60.00),
-    "o3": (10.00, 40.00),
-    "o3-mini": (1.10, 4.40),
-    "o4-mini": (1.10, 4.40),
-    # ── Anthropic — Claude 3.5 family ─────────────────────────────────
-    "claude-3-5-sonnet-20241022": (3.00, 15.00),
-    "claude-3-5-sonnet-20240620": (3.00, 15.00),
-    "claude-3-5-haiku-20241022": (0.80, 4.00),
-    # ── Anthropic — Claude 3 family ───────────────────────────────────
-    "claude-3-opus-20240229": (15.00, 75.00),
-    "claude-3-sonnet-20240229": (3.00, 15.00),
-    "claude-3-haiku-20240307": (0.25, 1.25),
-    # ── Anthropic — Claude 3.7 / 4 ────────────────────────────────────
-    "claude-3-7-sonnet-20250219": (3.00, 15.00),
-    "claude-sonnet-4-5": (3.00, 15.00),
-    # ── Google — Gemini 1.5 family ─────────────────────────────────────
-    "gemini-1.5-pro": (1.25, 5.00),
-    "gemini-1.5-pro-002": (1.25, 5.00),
-    "gemini-1.5-flash": (0.075, 0.30),
-    "gemini-1.5-flash-002": (0.075, 0.30),
-    "gemini-1.5-flash-8b": (0.0375, 0.15),
-    # ── Google — Gemini 2.0 family ─────────────────────────────────────
-    "gemini-2.0-flash": (0.10, 0.40),
-    "gemini-2.0-flash-lite": (0.075, 0.30),
-    # ── Google — Gemini 2.5 family ─────────────────────────────────────
-    "gemini-2.5-pro": (1.25, 10.00),
-    "gemini-2.5-flash": (0.15, 0.60),
-}
-
-
-def get_model_pricing(model_name: str) -> Optional[tuple[float, float]]:
-    """
-    Look up the (input, output) price per 1M tokens for a given model.
-
-    Returns None if the model is not found in the pricing table.
-    """
-    return MODEL_PRICING.get(model_name)
+import litellm
 
 
 def calculate_cost(
     model_name: str,
     prompt_tokens: int,
     completion_tokens: int,
-) -> Optional[float]:
-    """
-    Calculate the total USD cost for a request based on token counts.
-
-    Returns None if the model has no known pricing.
-    """
-    pricing = get_model_pricing(model_name)
-    if pricing is None:
+    usage_object=None,
+    response=None,
+) -> float | None:
+    model = model_name
+    if "/" not in model and model.startswith("gemini"):
+        model = f"gemini/{model}"
+    if "/" not in model and model.startswith("claude"):
+        model = f"anthropic/{model}"
+    try:
+        costs = litellm.cost_per_token(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            usage_object=usage_object,
+            response=response,
+        )
+        total = float(sum(costs))
+        return round(total, 10) if math.isfinite(total) and total >= 0 else None
+    except Exception:
+        # Unknown pricing must not be presented as a free request.
         return None
-
-    input_price_per_token, output_price_per_token = pricing
-
-    input_cost = (prompt_tokens / 1_000_000) * input_price_per_token
-    output_cost = (completion_tokens / 1_000_000) * output_price_per_token
-
-    return round(input_cost + output_cost, 8)
