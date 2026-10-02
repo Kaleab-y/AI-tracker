@@ -1,7 +1,6 @@
-fastapi
-uvicorn
-sqlmodel
-httpx
-python-dotenv
-litellm
-ruff
+fastapi==0.142.2
+uvicorn==0.54.0
+sqlmodel==0.0.47
+httpx==0.28.1
+python-dotenv==1.2.4
+litellm==1.103.2
